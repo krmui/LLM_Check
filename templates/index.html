@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>招标与投标文件检查</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        form {
+            margin-top: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        input[type="file"] {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .problem-list {
+            list-style-type: decimal;
+            padding-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>招标与投标文件检查工具</h1>
+    <form id="fileForm">
+        <label for="tenderFile">选择招标文件：</label>
+        <input type="file" id="tenderFile" name="tenderFile" accept=".pdf,.docx,.txt" required><br>
+
+        <label for="proposalFile">选择投标技术方案：</label>
+        <input type="file" id="proposalFile" name="proposalFile" accept=".pdf,.docx,.txt" required><br>
+
+        <button type="button" onclick="submitFiles()">检查问题</button>
+    </form>
+
+    <h2>检查结果：</h2>
+    <ul id="result" class="problem-list"></ul>
+
+    <script>
+        async function submitFiles() {
+            const form = document.getElementById('fileForm');
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch('/check', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    const resultList = document.getElementById('result');
+                    resultList.innerHTML = ''; // 清空之前的结果
+
+                    if (result.problems && result.problems.length > 0) {
+                        result.problems.forEach(problem => {
+                            const li = document.createElement('li');
+                            li.textContent = problem;
+                            resultList.appendChild(li);
+                        });
+                    } else {
+                        resultList.innerHTML = '<li>未发现问题。</li>';
+                    }
+                } else {
+                    const error = await response.json();
+                    document.getElementById('result').innerHTML = `<li>检查失败：${error.error}</li>`;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('result').innerHTML = '<li>发生错误，请检查网络连接！</li>';
+            }
+        }
+    </script>
+</body>
+</html>
