@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>智能标书合规检查系统</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #3498db;
+        }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .upload-section {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 25px;
+            transition: border-color 0.3s;
+        }
+        .upload-section:hover {
+            border-color: var(--secondary);
+        }
+        .file-input {
+            margin: 15px 0;
+        }
+        button {
+            background: var(--secondary);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: opacity 0.3s;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        .result-box {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        .problem-item {
+            padding: 10px;
+            margin: 8px 0;
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .status-text {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>智能标书合规检查系统</h1>
+        <p>上传招标文件和投标方案，自动检查技术合规性</p>
+    </div>
+
+    <div class="upload-section">
+        <div class="file-input">
+            <label>招标文件：</label>
+            <input type="file" id="tenderFile" accept=".pdf,.docx,.txt" required>
+        </div>
+        <div class="file-input">
+            <label>投标方案：</label>
+            <input type="file" id="bidFile" accept=".pdf,.docx,.txt" required>
+        </div>
+        <button onclick="startAnalysis()">开始检查</button>
+    </div>
+
+    <div class="result-box">
+        <h3>检查结果：</h3>
+        <div id="resultList"></div>
+        <p id="statusText" class="status-text"></p>
+    </div>
+
+    <script>
+        async function startAnalysis() {
+            const tenderFile = document.getElementById('tenderFile').files[0];
+            const bidFile = document.getElementById('bidFile').files[0];
+
+            if (!tenderFile || !bidFile) {
+                alert("请选择两个文件");
+                return;
+            }
+
+            const statusText = document.getElementById('statusText');
+            const resultList = document.getElementById('resultList');
+            statusText.textContent = "分析中，请稍候...";
+            resultList.innerHTML = '';
+
+            const formData = new FormData();
+            formData.append('tenderFile', tenderFile);
+            formData.append('proposalFile', bidFile);
+
+            try {
+                const response = await fetch('/check', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    if (result.problems.length > 0) {
+                        result.problems.forEach(problem => {
+                            const div = document.createElement('div');
+                            div.className = 'problem-item';
+                            div.textContent = problem;
+                            resultList.appendChild(div);
+                        });
+                        statusText.textContent = `发现 ${result.problems.length} 个潜在问题`;
+                    } else {
+                        resultList.innerHTML = '<div class="problem-item">所有检查项均符合要求</div>';
+                        statusText.textContent = "分析完成";
+                    }
+                } else {
+                    statusText.textContent = `错误：${result.error}`;
+                }
+            } catch (error) {
+                statusText.textContent = "请求失败，请检查网络连接";
+                console.error(error);
+            }
+        }
+    </script>
+</body>
+</html>

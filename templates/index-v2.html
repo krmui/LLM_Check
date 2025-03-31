@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>智能标书合规检查系统</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #3498db;
+            --highlight: #fff3cd;
+        }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .upload-section {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .file-input {
+            margin: 15px 0;
+        }
+        input[type="file"] {
+            margin-left: 10px;
+        }
+        button {
+            background: var(--secondary);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: opacity 0.3s;
+            float: right;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        .document-viewer {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-top: 25px;
+        }
+        .document-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            height: 65vh;
+            overflow-y: auto;
+        }
+        .document-item {
+            padding: 8px 12px;
+            margin: 5px 0;
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .document-item:hover {
+            background: #f8f9fa;
+        }
+        .document-item.highlighted {
+            background: var(--highlight);
+            border-color: #ffc107;
+        }
+        .page-marker {
+            position: absolute;
+            right: 10px;
+            color: #6c757d;
+            font-size: 0.8em;
+        }
+        .result-panel {
+            margin-top: 25px;
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .problem-item {
+            padding: 12px;
+            margin: 8px 0;
+            border-left: 3px solid #dc3545;
+            background: #fff5f5;
+        }
+        .status-text {
+            color: #6c757d;
+            font-style: italic;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>智能标书合规检查系统</h1>
+            <p>上传招标文件和投标方案，自动检查技术合规性</p>
+        </div>
+
+        <div class="upload-section">
+            <div class="file-input">
+                <label>招标文件：</label>
+                <input type="file" id="tenderFile" accept=".pdf,.docx,.txt" required>
+            </div>
+            <div class="file-input">
+                <label>投标方案：</label>
+                <input type="file" id="bidFile" accept=".pdf,.docx,.txt" required>
+            </div>
+            <button onclick="startAnalysis()">开始检查</button>
+            <div style="clear: both;"></div>
+        </div>
+
+        <div class="document-viewer">
+            <div class="document-panel">
+                <h3>招标文件内容</h3>
+                <div id="tenderContent"></div>
+            </div>
+            <div class="document-panel">
+                <h3>投标文件内容</h3>
+                <div id="bidContent"></div>
+            </div>
+        </div>
+
+        <div class="result-panel">
+            <h3>合规问题清单</h3>
+            <div id="resultList"></div>
+            <p id="statusText" class="status-text"></p>
+        </div>
+    </div>
+
+    <script>
+        function renderDocument(data, containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = data.map((item, index) => `
+                <div class="document-item" data-index="${index}">
+                    ${item.text}
+                    ${item.page ? `<span class="page-marker">第${item.page}页</span>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function highlightItems(indexes, containerId) {
+            const container = document.getElementById(containerId);
+            container.querySelectorAll('.document-item').forEach(item => {
+                item.classList.remove('highlighted');
+            });
+            indexes.forEach(index => {
+                const item = container.querySelector(`[data-index="${index}"]`);
+                if (item) item.classList.add('highlighted');
+            });
+        }
+
+        async function startAnalysis() {
+            const tenderFile = document.getElementById('tenderFile').files[0];
+            const bidFile = document.getElementById('bidFile').files[0];
+            const statusText = document.getElementById('statusText');
+            const resultList = document.getElementById('resultList');
+
+            if (!tenderFile || !bidFile) {
+                alert("请选择招标文件和投标文件");
+                return;
+            }
+
+            // 重置状态
+            statusText.textContent = "分析中，请稍候...";
+            resultList.innerHTML = '';
+            document.getElementById('tenderContent').innerHTML = '';
+            document.getElementById('bidContent').innerHTML = '';
+
+            const formData = new FormData();
+            formData.append('tenderFile', tenderFile);
+            formData.append('proposalFile', bidFile);
+
+            try {
+                const response = await fetch('/check', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '未知错误');
+
+                // 渲染文档内容
+                renderDocument(result.tender, 'tenderContent');
+                renderDocument(result.proposal, 'bidContent');
+
+                // 处理检查结果
+                if (result.problems.length > 0) {
+                    result.problems.forEach((problem, idx) => {
+                        const div = document.createElement('div');
+                        div.className = 'problem-item';
+                        div.innerHTML = `
+                            <div>问题 ${idx + 1}: ${problem.description}</div>
+                            <small>涉及段落: ${problem.locations.join(', ')}</small>
+                        `;
+                        div.onmouseenter = () => highlightItems(problem.locations, 'bidContent');
+                        div.onmouseleave = () => highlightItems([], 'bidContent');
+                        resultList.appendChild(div);
+                    });
+                    statusText.textContent = `发现 ${result.problems.length} 个合规问题`;
+                } else {
+                    resultList.innerHTML = '<div class="problem-item">所有检查项均符合要求</div>';
+                    statusText.textContent = "分析完成，未发现问题";
+                }
+
+                // 添加点击滚动功能
+                document.querySelectorAll('.document-item').forEach(item => {
+                    item.onclick = () => {
+                        item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    };
+                });
+
+            } catch (error) {
+                statusText.textContent = `错误: ${error.message}`;
+                console.error(error);
+            }
+        }
+    </script>
+</body>
+</html>

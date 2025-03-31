@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, render_template
 import os
-import re  # 新增导入
+import re
 from datetime import datetime
 from PyPDF2 import PdfReader
 from docx import Document
@@ -8,16 +8,28 @@ from openai import OpenAI
 
 app = Flask(__name__)
 
-# 初始化 OpenAI 客户端
 client = OpenAI(
     api_key=os.getenv("DASHSCOPE_API_KEY"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
-# 文件保存路径
 UPLOAD_FOLDER = './uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+
+def split_text(text, chunk_size=800, overlap=100):
+    """将长文本分块处理"""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start = end - overlap
+        if start >= end:
+            break
+    return chunks
+
 
 def extract_text_from_file(file_path):
     """从文件中提取文本内容"""
@@ -33,89 +45,96 @@ def extract_text_from_file(file_path):
                 text = f.read()
         else:
             raise ValueError("不支持的文件格式")
-        return text
+        return text.replace('\n', ' ').strip()  # 清理换行符
     except Exception as e:
         raise ValueError(f"文件读取失败：{e}")
 
+
 def format_model_response(response):
-    """格式化大模型的回复，提取问题列表"""
+    """格式化大模型的回复"""
     lines = response.split('\n')
     problems = []
     for line in lines:
         line = line.strip()
         if line and not line.startswith(("招标文件", "投标技术方案")):
-            # 使用正则表达式移除序号
-            cleaned_line = re.sub(r'^\d+\.\s*', '', line)
-            problems.append(cleaned_line)
+            cleaned_line = re.sub(r'^\d+[\.、]?\s*', '', line)
+            if cleaned_line:
+                problems.append(cleaned_line)
     return problems
+
 
 @app.route('/', methods=['GET'])
 def index():
-    """渲染前端页面"""
-    return render_template('index.html')
+    return render_template('index-v1.html')
+
 
 @app.route('/check', methods=['POST'])
 def check_files():
     try:
-        # 获取上传的文件
         tender_file = request.files.get('tenderFile')
         proposal_file = request.files.get('proposalFile')
 
         if not tender_file or not proposal_file:
             return jsonify({"error": "请上传招标文件和投标技术方案！"}), 400
 
-        # 生成唯一的子文件夹名称
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         folder_name = f"{tender_file.filename.split('.')[0]}_{timestamp}"
         folder_path = os.path.join(UPLOAD_FOLDER, folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # 保存文件到子文件夹中
         tender_path = os.path.join(folder_path, tender_file.filename)
         proposal_path = os.path.join(folder_path, proposal_file.filename)
         tender_file.save(tender_path)
         proposal_file.save(proposal_path)
 
-        # 提取文本内容
+        # 提取并分块文本
         tender_text = extract_text_from_file(tender_path)
         proposal_text = extract_text_from_file(proposal_path)
 
-        # 构造输入提示词
-        input_prompt = (
-            f"请分析以下招标文件和投标技术方案的内容，检查投标技术方案是否符合招标文件的要求。\n"
-            f"如果发现问题，请列出具体问题，仅返回问题列表，不要包含其他信息。\n\n"
-            f"招标文件内容：\n{tender_text}\n\n"
-            f"投标技术方案内容：\n{proposal_text}"
-        )
+        # 分块参数设置（可根据模型实际输入限制调整）
+        tender_chunks = split_text(tender_text, chunk_size=1000, overlap=200)
+        proposal_chunks = split_text(proposal_text, chunk_size=1000, overlap=200)
 
-        # 调用大模型进行分析
-        response = client.chat.completions.create(
-            model="qwen-max-latest",
-            messages=[
-                {"role": "system", "content": "你是一个专业的招标文件分析助手，仅返回问题列表。"},
-                {"role": "user", "content": input_prompt}
-            ],
-            max_tokens=2000,
-            temperature=0.7
-        )
-        raw_response = response.choices[0].message.content.strip()
+        all_problems = []
+        for t_chunk in tender_chunks[:5]:  # 限制最多处理前5个招标块
+            for p_chunk in proposal_chunks[:5]:  # 限制最多处理前5个投标块
+                input_prompt = (
+                    f"请严格分析以下招标内容与投标内容的对应关系，列出投标中不符合招标要求的具体问题：\n"
+                    f"【招标内容开始】\n{t_chunk}\n【招标内容结束】\n\n"
+                    f"【投标内容开始】\n{p_chunk}\n【投标内容结束】\n\n"
+                    f"要求：\n1. 只返回具体问题\n2. 不要编号\n3. 确保问题明确具体"
+                )
 
-        # 格式化大模型的回复
-        problems = format_model_response(raw_response)
+                try:
+                    response = client.chat.completions.create(
+                        model="qwen-max-latest",
+                        messages=[
+                            {"role": "system", "content": "你是一个严谨的招标文件分析专家，只返回检查发现的具体问题"},
+                            {"role": "user", "content": input_prompt}
+                        ],
+                        max_tokens=2000,
+                        temperature=0.3  # 降低随机性
+                    )
+                    raw_response = response.choices[0].message.content.strip()
+                    all_problems.extend(format_model_response(raw_response))
+                except Exception as e:
+                    print(f"API调用失败：{str(e)}")
+                    continue
 
-        # 去重并保存结果（保持顺序）
+        # 高级去重（基于语义相似度的简单实现）
         seen = set()
         unique_problems = []
-        for problem in problems:
-            if problem not in seen:
-                seen.add(problem)
+        for problem in all_problems:
+            # 简化的相似度判断（实际应使用更复杂的方法）
+            key = problem[:50].lower().replace(' ', '')  # 取前50字符作为近似判断
+            if key not in seen:
+                seen.add(key)
                 unique_problems.append(problem)
 
         result_file_path = os.path.join(folder_path, "analysis_result.txt")
         with open(result_file_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(unique_problems))
 
-        # 返回结果
         return jsonify({
             "problems": unique_problems,
             "result_file": result_file_path
@@ -126,5 +145,6 @@ def check_files():
     except Exception as e:
         return jsonify({"error": f"服务器内部错误：{str(e)}"}), 500
 
+
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(port=5001)
