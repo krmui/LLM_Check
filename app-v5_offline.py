@@ -4,19 +4,20 @@ import re
 from datetime import datetime
 from PyPDF2 import PdfReader
 from docx import Document
-from openai import OpenAI
 import hashlib
 from difflib import SequenceMatcher
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = './uploads'
 
-client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
-)
+# 初始化本地模型
+EMBEDDING_MODEL = SentenceTransformer('./models/all-MiniLM-L6-v2')  # 嵌入模型路径
+LLM_TOKENIZER = AutoTokenizer.from_pretrained("./models/Qwen2.5-1.5B-Instruct")   # LLM路径
+LLM_MODEL = AutoModelForCausalLM.from_pretrained("./models/Qwen2.5-1.5B-Instruct")
 
 def extract_structured_text(file_path):
     """提取带结构的文本内容"""
@@ -50,17 +51,11 @@ def extract_structured_text(file_path):
         raise ValueError(f"文件解析失败：{str(e)}")
 
 def get_embedding(text):
-    """获取文本语义向量"""
+    """使用本地模型获取文本语义向量"""
     try:
-        response = client.embeddings.create(
-            model="text-embedding-v3",
-            input=text,
-            dimensions=1024,  # 使用1024维向量
-            encoding_format="float"
-        )
-        return np.array(response.data[0].embedding)
+        return EMBEDDING_MODEL.encode(text, convert_to_numpy=True)
     except Exception as e:
-        print(f"Embedding API Error: {str(e)}")
+        print(f"Embedding生成失败：{str(e)}")
         return None
 
 def add_markers(structured_data):
@@ -76,7 +71,6 @@ def add_markers(structured_data):
         }
         marked_data.append(marked_item)
     return marked_data
-
 
 def parse_problems(response_text):
     """解析模型响应中的问题定位"""
@@ -96,7 +90,6 @@ def parse_problems(response_text):
                     "locations": locations
                 })
     return problems
-
 
 def deduplicate_problems(problems, similarity_threshold=0.85):
     """支持语义相似度判重的去重算法"""
@@ -152,8 +145,7 @@ def deduplicate_problems(problems, similarity_threshold=0.85):
 
 @app.route('/', methods=['GET'])
 def index():
-    return render_template('index-v4.html')
-
+    return render_template('index-v5_offline.html')
 
 @app.route('/check', methods=['POST'])
 def check_files():
@@ -165,24 +157,22 @@ def check_files():
         if not tender_file or not proposal_file:
             return jsonify({"error": "请上传招标文件和投标技术方案！"}), 400
 
-        # 创建存储目录
+        # 文件保存处理
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         folder_name = f"{tender_file.filename.split('.')[0]}_{timestamp}"
         folder_path = os.path.join(app.config['UPLOAD_FOLDER'], folder_name)
         os.makedirs(folder_path, exist_ok=True)
 
-        # 保存文件
         tender_path = os.path.join(folder_path, tender_file.filename)
         proposal_path = os.path.join(folder_path, proposal_file.filename)
         tender_file.save(tender_path)
         proposal_file.save(proposal_path)
 
-        # 处理招标文件
+        # 文本提取处理
         tender_structure = extract_structured_text(tender_path)
         marked_tender = add_markers(tender_structure)
         tender_text = " ".join([item["marked_text"] for item in marked_tender])
 
-        # 处理投标文件
         proposal_structure = extract_structured_text(proposal_path)
         marked_proposal = add_markers(proposal_structure)
         proposal_text = " ".join([item["marked_text"] for item in marked_proposal])
@@ -207,21 +197,18 @@ def check_files():
                 3. 只返回问题内容，每个问题不要带编号"""
 
                 try:
-                    response = client.chat.completions.create(
-                        model="qwen-max-latest",
-                        messages=[{
-                            "role": "system",
-                            "content": "你是一个严谨的招投标文件分析专家"
-                        }, {
-                            "role": "user",
-                            "content": prompt
-                        }],
-                        temperature=0.3
+                    # 使用本地模型生成响应
+                    inputs = LLM_TOKENIZER(prompt, return_tensors="pt", max_length=4096, truncation=True)
+                    outputs = LLM_MODEL.generate(
+                        inputs.input_ids,
+                        max_new_tokens=512,
+                        temperature=0.3,
+                        do_sample=True
                     )
-                    raw_response = response.choices[0].message.content
+                    raw_response = LLM_TOKENIZER.decode(outputs[0], skip_special_tokens=True)
                     all_problems.extend(parse_problems(raw_response))
                 except Exception as e:
-                    print(f"API错误：{str(e)}")
+                    print(f"模型推理错误：{str(e)}")
 
         # 去重处理
         unique_problems = deduplicate_problems(all_problems)
@@ -235,12 +222,10 @@ def check_files():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/uploads/<path:filename>')
 def serve_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    app.run(port=5004)
+    app.run(port=5005)
